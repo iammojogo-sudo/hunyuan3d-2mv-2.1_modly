@@ -1,4 +1,4 @@
-# Hunyuan3D-2mv — Modly Extension (v2.1)
+# Hunyuan3D-2mv(2.0 version) — Modly Extension (local update 2.1)
 
 Generate textured 3D meshes from images using Tencent's Hunyuan3D-2mv. Three nodes:
 

@@ -32,7 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 # Directly imported by the bridges (beyond hy3dgen's own transitive deps).
 RUNTIME_DEPS = [
@@ -179,7 +179,7 @@ def setup(
     # hy3dgen (shapegen + texgen) from the Tencent Hunyuan3D-2 source.
     # Installed WITH its declared deps so the bridge imports cleanly.
     print("[setup] Installing hy3dgen from Tencent/Hunyuan3D-2 (source) …")
-    pip(venv, "install", "git+https://github.com/Tencent/Hunyuan3D-2.git")
+    pip(venv, "install", "https://github.com/Tencent/Hunyuan3D-2/archive/refs/heads/main.zip")
 
     # Runtime deps for the orchestrator + bridge.
     print("[setup] Installing Hunyuan3D-2mv runtime deps …")
@@ -233,7 +233,7 @@ def _packaging_setup() -> None:
         ],
         include_package_data=True,
         install_requires=[
-            "hy3dgen @ git+https://github.com/Tencent/Hunyuan3D-2.git",
+            "hy3dgen @ https://github.com/Tencent/Hunyuan3D-2/archive/refs/heads/main.zip",
             "torch",
             "torchvision",
             "torchaudio",

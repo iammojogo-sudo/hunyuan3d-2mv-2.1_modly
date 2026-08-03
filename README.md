@@ -31,15 +31,16 @@ Generate textured 3D meshes from images using Tencent's Hunyuan3D-2mv. Three nod
 
 ## Updating / Installing from GitHub
 
-This repo is the canonical source. After pulling a new release:
+This repo is the canonical source: `https://github.com/iammojogo-sudo/hunyuan3d-2mv-2.1_modly`
 
-1. **Update the extension** in Modly's Extensions tab (it re-runs `setup.py`, which installs any new dependencies into the venv).
-2. **Model weights do not need re-downloading** — they already live in Modly's `models/` folder; the first-load bridge links them into place automatically.
+1. **Add the extension in Modly's Extensions tab** (paste the repo URL) — Modly downloads it and re-runs `setup.py`, which installs every dependency (torch, hy3dgen, rembg, …) into the isolated venv. No git CLI or manual dependency steps are needed.
+2. **Download the model weights** in the Extensions → model view (per-node **Download** button) — ~15 GB total from public Hugging Face repos.
+3. **Model weights do not need re-downloading on updates** — they already live in Modly's `models/` folder; the first-load bridge links them into place automatically.
 
 For a manual install:
 
 ```
-pip install git+https://github.com/iammojogo-sudo/hunyuan3d-2mv_modly.git
+pip install https://github.com/iammojogo-sudo/hunyuan3d-2mv-2.1_modly/archive/refs/heads/main.zip
 ```
 
 install_requires covers every runtime dependency (use the CUDA torch wheel separately on GPU machines).

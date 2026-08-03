@@ -2,6 +2,8 @@
 
 Generate textured 3D meshes from images using Tencent's Hunyuan3D-2mv. Three nodes:
 
+USING THE GENERATE MESH NODE: https://youtu.be/qiTh1GerQoA
+
 | Node | What it does |
 |------|-------------|
 | **Generate 3D Mesh** | Creates a 3D shape (untextured GLB mesh) from 1–6 photos of an object |

@@ -1,0 +1,28 @@
+# Local venv (built by setup.py at install time — never commit)
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Dev backups
+*.bak
+*.bck
+*.orig
+*~
+
+# Modly runtime state (created in the extension dir by the first-load bridge)
+.bridge_state.json
+
+# Modly run artifacts / outputs
+.modly_run.json
+run_*/
+outputs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini

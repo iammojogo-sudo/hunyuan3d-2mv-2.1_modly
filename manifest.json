@@ -1,0 +1,321 @@
+{
+  "id": "hunyuan3d-2mv",
+  "name": "Hunyuan3D-2mv",
+  "type": "model",
+  "source": "https://github.com/iammojogo-sudo/hunyuan3d-2mv_modly",
+  "description": "Multi-view to 3D mesh generation using Hunyuan3D-2mv. Takes a tiled image of orthographic views (up to 6: front, left, back, right, top, bottom) and outputs a 3D GLB mesh. Texture is a separate node.",
+  "version": "2.1.0",
+  "author": "iammojogo",
+  "generator_class": "Hunyuan3DmvGenerator",
+  "tags": [
+    "3d-generation",
+    "mesh",
+    "multi-view",
+    "shape-generation"
+  ],
+  "nodes": [
+    {
+      "id": "generate",
+      "name": "Generate 3D Mesh",
+      "input": "image",
+      "output": "mesh",
+      "hf_repo": "tencent/Hunyuan3D-2mv",
+      "download_check": "hunyuan3d-dit-v2-mv-turbo/model.fp16.safetensors",
+      "hf_skip_prefixes": [],
+      "hf_include_prefixes": [
+        "hunyuan3d-dit-v2-mv-turbo/"
+      ],
+      "params_schema": [
+        {
+          "id": "num_inference_steps",
+          "label": "Quality Steps",
+          "type": "number",
+          "default": 10,
+          "min": 1,
+          "max": 60,
+          "step": 1,
+          "tooltip": "Number of shape-generation diffusion steps. Lower = faster (5-10 is turbo territory). Higher = slower but potentially better quality (30 is the standard high-quality setting)."
+        },
+        {
+          "id": "shape_views",
+          "label": "Input Views",
+          "type": "select",
+          "default": 4,
+          "options": [
+            {
+              "value": 1,
+              "label": "1 view (front)"
+            },
+            {
+              "value": 2,
+              "label": "2 views (front + left)"
+            },
+            {
+              "value": 3,
+              "label": "3 views (front + left + back)"
+            },
+            {
+              "value": 4,
+              "label": "4 views (all)"
+            },
+            {
+              "value": 5,
+              "label": "5 views (front + left + back + right + top)"
+            },
+            {
+              "value": 6,
+              "label": "6 views (all + top + bottom)"
+            }
+          ],
+          "tooltip": "How many views to use for shape generation (1-6). The bridge auto-detects the grid layout from the image aspect ratio (2x2 for ≤4, 2x3 or 3x2 for 5-6). Reading order: [front, left, back, right, top, bottom]."
+        },
+        {
+          "id": "octree_resolution",
+          "label": "Mesh Resolution",
+          "type": "select",
+          "default": 256,
+          "options": [
+            {
+              "value": 32,
+              "label": "32 (Blocky - ~7-8k faces)"
+            },
+            {
+              "value": 64,
+              "label": "64 (Low - 6GB)"
+            },
+            {
+              "value": 96,
+              "label": "96 (Low)"
+            },
+            {
+              "value": 128,
+              "label": "128 (Balanced - 6GB)"
+            },
+            {
+              "value": 192,
+              "label": "192 (Fast - 6GB)"
+            },
+            {
+              "value": 256,
+              "label": "256 (Low)"
+            },
+            {
+              "value": 380,
+              "label": "380 (Standard)"
+            },
+            {
+              "value": 512,
+              "label": "512 (High)"
+            }
+          ],
+          "tooltip": "Marching-cubes grid resolution — directly sets face count. Lower = coarser/blockier mesh with fewer faces (and less VRAM). 32 gives ~7-8k faces, ideal for low-end meshes."
+        },
+        {
+          "id": "dual_guidance_scale",
+          "label": "Dual Guidance",
+          "type": "select",
+          "default": "10.5",
+          "options": [
+            {
+              "value": "10.5",
+              "label": "On (Best quality, 3x slower)"
+            },
+            {
+              "value": "-1",
+              "label": "Off (2x faster, slight quality loss)"
+            }
+          ],
+          "tooltip": "Dual-guidance CFG runs 3 forward passes per step on 6GB. Turn off for speed."
+        },
+        {
+          "id": "input_mode",
+          "label": "Image Input Mode",
+          "type": "select",
+          "default": "tiled",
+          "options": [
+            { "value": "single", "label": "Single Image (whole image = main view)" },
+            { "value": "tiled", "label": "Tiled Image (auto-detect grid from image)" },
+            { "value": "folder", "label": "Image Folder (auto-tile from folder)" }
+          ],
+          "tooltip": "How to interpret the wired image. 'Single' uses the whole image as one view. 'Tiled' splits a pre-made grid (auto-detects 2x2/2x3/3x2 from aspect ratio). 'Folder' reads images from the folder path below."
+        },
+        {
+          "id": "image_folder",
+          "label": "Image Folder",
+          "type": "string",
+          "default": "",
+          "tooltip": "Only used when Input Mode = 'Image Folder'. Path to a folder of images to auto-tile into a 2x2 grid."
+        }
+      ]
+    },
+    {
+      "id": "texture",
+      "name": "Texture Mesh",
+      "inputs": [
+        "mesh",
+        "image"
+      ],
+      "output": "mesh",
+      "hf_repo": "tencent/Hunyuan3D-2",
+      "download_check": "hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors",
+      "hf_skip_prefixes": [
+        "hunyuan3d-dit-v2-0/",
+        "hunyuan3d-dit-v2-0/*",
+        "hunyuan3d-dit-v2-0-turbo/",
+        "hunyuan3d-dit-v2-0-turbo/*",
+        "hunyuan3d-dit-v2-mv/",
+        "hunyuan3d-dit-v2-mv/*",
+        "hunyuan3d-paint-v2-0-turbo/",
+        "hunyuan3d-paint-v2-0-turbo/*"
+      ],
+      "hf_include_prefixes": [
+        "hunyuan3d-paint-v2-0/",
+        "hunyuan3d-delight-v2-0/"
+      ],
+      "description": "Hunyuan3D-2.0 paint pipeline. Takes an input mesh plus reference image(s) you wire in, and textures it via multiview diffusion + bake + inpaint. Inpaint is always on (fills UV gaps that would otherwise leave the mesh black).",
+      "params_schema": [
+        {
+          "id": "decimate_faces",
+          "label": "Decimate Faces",
+          "type": "number",
+          "default": 40000,
+          "min": 1000,
+          "max": 500000,
+          "step": 1000,
+          "tooltip": "Decimate the mesh to ~N triangles before the paint pipeline's UV-unwrap. Lower = faster/less VRAM."
+        },
+        {
+          "id": "texture_size",
+          "label": "Texture Resolution",
+          "type": "select",
+          "default": 2048,
+          "options": [
+            {
+              "value": 16,
+              "label": "16 (Tiny)"
+            },
+            {
+              "value": 32,
+              "label": "32 (Tiny)"
+            },
+            {
+              "value": 64,
+              "label": "64 (Very Low)"
+            },
+            {
+              "value": 96,
+              "label": "96 (Very Low)"
+            },
+            {
+              "value": 128,
+              "label": "128 (Low)"
+            },
+            {
+              "value": 192,
+              "label": "192 (Low)"
+            },
+            {
+              "value": 256,
+              "label": "256 (Balanced)"
+            },
+            {
+              "value": 512,
+              "label": "512 (High)"
+            },
+            {
+              "value": 1024,
+              "label": "1024 (High)"
+            },
+            {
+              "value": 2048,
+              "label": "2048 (Ultra - Default)"
+            },
+            {
+              "value": 4096,
+              "label": "4096 (Max)"
+            }
+          ],
+          "tooltip": "Resolution of the baked UV texture atlas. Higher = sharper textures but more VRAM and slower bake. 2048 pairs well with the dense UV packing."
+        },
+        {
+          "id": "reference_images",
+          "label": "Reference Images",
+          "type": "select",
+          "default": 4,
+          "options": [
+            { "value": 1, "label": "1 (whole image, no split)" },
+            { "value": 2, "label": "2 (front + left)" },
+            { "value": 3, "label": "3 (front + left + back)" },
+            { "value": 4, "label": "4 (front + left + back + right)" },
+            { "value": 5, "label": "5 (front + left + back + right + top)" },
+            { "value": 6, "label": "6 (front + left + back + right + top + bottom)" }
+          ],
+          "tooltip": "How many reference images to feed the texture diffusion. 1 = use the whole image as a single reference. 2-6 = split the tiled image in reading order, auto-detecting 2x2/2x3/3x2 grid from aspect ratio."
+        },
+        {
+          "id": "delight",
+          "label": "Delight (Lighting Normalize)",
+          "type": "select",
+          "default": "off",
+          "options": [
+            { "value": "off", "label": "Off (keep real colors)" },
+            { "value": "on", "label": "On (normalize lighting)" }
+          ],
+          "tooltip": "Delight re-renders the subject under canonical lighting. Off by default — it often washes out real colors and detail. Turn On only if your reference has strong shadows/highlights that hurt the texture."
+        },
+        {
+          "id": "texture_diffusion_steps",
+          "label": "Texture Diffusion Steps",
+          "type": "number",
+          "default": 30,
+          "min": 5,
+          "max": 60,
+          "step": 1,
+          "tooltip": "Number of multiview diffusion steps for texture generation. Lower = faster but less refined. Higher = slower but potentially sharper. 30 is the stock default."
+        },
+        {
+          "id": "input_mode",
+          "label": "Image Input Mode",
+          "type": "select",
+          "default": "tiled",
+          "options": [
+            { "value": "single", "label": "Single Image (whole image = main view)" },
+            { "value": "tiled", "label": "Tiled Image (auto-detect grid from image)" },
+            { "value": "folder", "label": "Image Folder (auto-tile from folder)" }
+          ],
+          "tooltip": "How to interpret the wired conditioning image. 'Single' uses the whole image as one reference. 'Tiled' splits a pre-made grid (auto-detects 2x2/2x3/3x2 from aspect ratio). 'Folder' reads images from the folder path below."
+        },
+        {
+          "id": "image_folder",
+          "label": "Image Folder",
+          "type": "string",
+          "default": "",
+          "tooltip": "Only used when Input Mode = 'Image Folder'. Path to a folder of images to auto-tile into a 2x2 grid."
+        },
+        {
+          "id": "texture_method",
+          "label": "Texture Method",
+          "type": "select",
+          "default": "diffusion",
+          "options": [
+            { "value": "diffusion", "label": "Diffusion (Hunyuan3D-2, 512px ceiling)" },
+            { "value": "hybrid", "label": "Hybrid (diffusion geometry + full-res refs via optical flow)" },
+            { "value": "deform", "label": "Deform (warp reference views to mesh, full res)" }
+          ],
+          "tooltip": "How to generate the texture views that get baked onto the mesh. 'Diffusion' runs Hunyuan3D-2 multiview diffusion (learns how the reference fits the mesh geometry, but capped at 512px per view). 'Hybrid' runs the same diffusion to learn the geometry, then warps each full-res reference onto that geometry with dense optical flow — full reference resolution with correct mesh fit. 'Deform' skips diffusion entirely: it warps each wired reference view so its silhouette matches the mesh's rendered silhouette at the same camera angle (silhouette warp handles scale/offset, not radical shape changes)."
+        }
+      ]
+    },
+    {
+      "id": "texture_apply",
+      "name": "Apply Texture",
+      "inputs": [
+        "mesh",
+        "image"
+      ],
+      "output": "mesh",
+      "description": "Maps an upscaled UV texture atlas (PNG/JPG) onto a mesh that already has UV coordinates. No diffusion, no bake — just applies the image to the existing UVs and exports GLB. Use this to feed a super-resolved atlas from an external upscaler back onto the original mesh.",
+      "params_schema": []
+    }
+  ]
+}

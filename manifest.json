@@ -2,7 +2,7 @@
   "id": "hunyuan3d-2mv",
   "name": "Hunyuan3D-2mv",
   "type": "model",
-  "source": "https://github.com/iammojogo-sudo/hunyuan3d-2mv_modly",
+  "source": "https://github.com/iammojogo-sudo/hunyuan3d-2mv-2.1_modly",
   "description": "Multi-view to 3D mesh generation using Hunyuan3D-2mv. Takes a tiled image of orthographic views (up to 6: front, left, back, right, top, bottom) and outputs a 3D GLB mesh. Texture is a separate node.",
   "version": "2.1.0",
   "author": "iammojogo",
@@ -133,9 +133,18 @@
           "type": "select",
           "default": "tiled",
           "options": [
-            { "value": "single", "label": "Single Image (whole image = main view)" },
-            { "value": "tiled", "label": "Tiled Image (auto-detect grid from image)" },
-            { "value": "folder", "label": "Image Folder (auto-tile from folder)" }
+            {
+              "value": "single",
+              "label": "Single Image (whole image = main view)"
+            },
+            {
+              "value": "tiled",
+              "label": "Tiled Image (auto-detect grid from image)"
+            },
+            {
+              "value": "folder",
+              "label": "Image Folder (auto-tile from folder)"
+            }
           ],
           "tooltip": "How to interpret the wired image. 'Single' uses the whole image as one view. 'Tiled' splits a pre-made grid (auto-detects 2x2/2x3/3x2 from aspect ratio). 'Folder' reads images from the folder path below."
         },
@@ -243,12 +252,30 @@
           "type": "select",
           "default": 4,
           "options": [
-            { "value": 1, "label": "1 (whole image, no split)" },
-            { "value": 2, "label": "2 (front + left)" },
-            { "value": 3, "label": "3 (front + left + back)" },
-            { "value": 4, "label": "4 (front + left + back + right)" },
-            { "value": 5, "label": "5 (front + left + back + right + top)" },
-            { "value": 6, "label": "6 (front + left + back + right + top + bottom)" }
+            {
+              "value": 1,
+              "label": "1 (whole image, no split)"
+            },
+            {
+              "value": 2,
+              "label": "2 (front + left)"
+            },
+            {
+              "value": 3,
+              "label": "3 (front + left + back)"
+            },
+            {
+              "value": 4,
+              "label": "4 (front + left + back + right)"
+            },
+            {
+              "value": 5,
+              "label": "5 (front + left + back + right + top)"
+            },
+            {
+              "value": 6,
+              "label": "6 (front + left + back + right + top + bottom)"
+            }
           ],
           "tooltip": "How many reference images to feed the texture diffusion. 1 = use the whole image as a single reference. 2-6 = split the tiled image in reading order, auto-detecting 2x2/2x3/3x2 grid from aspect ratio."
         },
@@ -258,8 +285,14 @@
           "type": "select",
           "default": "off",
           "options": [
-            { "value": "off", "label": "Off (keep real colors)" },
-            { "value": "on", "label": "On (normalize lighting)" }
+            {
+              "value": "off",
+              "label": "Off (keep real colors)"
+            },
+            {
+              "value": "on",
+              "label": "On (normalize lighting)"
+            }
           ],
           "tooltip": "Delight re-renders the subject under canonical lighting. Off by default — it often washes out real colors and detail. Turn On only if your reference has strong shadows/highlights that hurt the texture."
         },
@@ -279,9 +312,18 @@
           "type": "select",
           "default": "tiled",
           "options": [
-            { "value": "single", "label": "Single Image (whole image = main view)" },
-            { "value": "tiled", "label": "Tiled Image (auto-detect grid from image)" },
-            { "value": "folder", "label": "Image Folder (auto-tile from folder)" }
+            {
+              "value": "single",
+              "label": "Single Image (whole image = main view)"
+            },
+            {
+              "value": "tiled",
+              "label": "Tiled Image (auto-detect grid from image)"
+            },
+            {
+              "value": "folder",
+              "label": "Image Folder (auto-tile from folder)"
+            }
           ],
           "tooltip": "How to interpret the wired conditioning image. 'Single' uses the whole image as one reference. 'Tiled' splits a pre-made grid (auto-detects 2x2/2x3/3x2 from aspect ratio). 'Folder' reads images from the folder path below."
         },
@@ -298,9 +340,18 @@
           "type": "select",
           "default": "diffusion",
           "options": [
-            { "value": "diffusion", "label": "Diffusion (Hunyuan3D-2, 512px ceiling)" },
-            { "value": "hybrid", "label": "Hybrid (diffusion geometry + full-res refs via optical flow)" },
-            { "value": "deform", "label": "Deform (warp reference views to mesh, full res)" }
+            {
+              "value": "diffusion",
+              "label": "Diffusion (Hunyuan3D-2, 512px ceiling)"
+            },
+            {
+              "value": "hybrid",
+              "label": "Hybrid (diffusion geometry + full-res refs via optical flow)"
+            },
+            {
+              "value": "deform",
+              "label": "Deform (warp reference views to mesh, full res)"
+            }
           ],
           "tooltip": "How to generate the texture views that get baked onto the mesh. 'Diffusion' runs Hunyuan3D-2 multiview diffusion (learns how the reference fits the mesh geometry, but capped at 512px per view). 'Hybrid' runs the same diffusion to learn the geometry, then warps each full-res reference onto that geometry with dense optical flow — full reference resolution with correct mesh fit. 'Deform' skips diffusion entirely: it warps each wired reference view so its silhouette matches the mesh's rendered silhouette at the same camera angle (silhouette warp handles scale/offset, not radical shape changes)."
         }

@@ -8,6 +8,9 @@ USING THE GENERATE TEXTURE NODE: https://youtu.be/pK5mSSb2wIo -single image
 
 RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/DWlPblUVh3w - single image delighting-unmatched
 
+RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/7htMHkWO4b8 - single image delighting OFF - changes settings
+
+
 
 | Node | What it does |
 |------|-------------|

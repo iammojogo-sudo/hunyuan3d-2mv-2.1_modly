@@ -3,8 +3,11 @@
 Generate textured 3D meshes from images using Tencent's Hunyuan3D-2mv. Three nodes:
 
 USING THE GENERATE MESH NODE: https://youtu.be/qiTh1GerQoA -single image
+
 USING THE GENERATE TEXTURE NODE: https://youtu.be/pK5mSSb2wIo -single image
+
 RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/DWlPblUVh3w - single image delighting-unmatched
+
 
 | Node | What it does |
 |------|-------------|

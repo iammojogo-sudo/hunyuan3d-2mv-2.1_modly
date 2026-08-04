@@ -10,6 +10,8 @@ RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/DWlPblUVh3w - single
 
 RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/7htMHkWO4b8 - single image delighting OFF - changes settings
 
+USING THE APPLY TEXTURE NODE: https://youtu.be/OPavm7HPohI - Previous mapped image only
+
 
 
 | Node | What it does |

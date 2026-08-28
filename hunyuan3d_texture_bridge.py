@@ -253,11 +253,10 @@ def _hybrid_flow_multiview(cond_views, diff_views, position_maps, out_size, flow
 
 
 def _split_tiled_image(image_path, count=4):
-    """Split a tiled image into a grid based on the image's aspect ratio:
+    """Split a tiled image into a grid based on the image's aspect ratio.
 
-       Very wide (w/h >= 1.8) → 2 columns × 1 row  (2 views)
-       Roughly square           → 2 columns × 2 rows (4 views)
-       Very tall (w/h <= 0.7)   → 2 columns × 3 rows (6 views)
+    Uses closest-distance matching against candidate grids (same logic as
+    the shape bridge's _detect_grid) so both pipelines agree on layouts.
 
     Returns cropped PIL images composited onto white, up to `count`.
     """
@@ -266,13 +265,14 @@ def _split_tiled_image(image_path, count=4):
     except Exception:
         return [image_path]
     w, h = img.size
-    ratio = w / h
-    if ratio >= 1.8:
-        _ncols, _nrows = 2, 1
-    elif ratio <= 0.7:
-        _ncols, _nrows = 2, 3
-    else:
-        _ncols, _nrows = 2, 2
+    ratio = w / h if h > 0 else 1.0
+    _candidates = [(2, 1), (2, 2), (2, 3)]
+    _best, _best_err = (2, 2), float("inf")
+    for _nc, _nr in _candidates:
+        _err = abs(ratio - _nc / _nr)
+        if _err < _best_err:
+            _best, _best_err = (_nc, _nr), _err
+    _ncols, _nrows = _best
     _cw, _ch = w // _ncols, h // _nrows
     if _cw < 8 or _ch < 8:
         return [_composite_on_white(img)]
@@ -457,6 +457,179 @@ def texture_mesh(args):
 
     from hy3dgen.texgen import Hunyuan3DPaintPipeline
     from hy3dgen.texgen.utils.uv_warp_utils import mesh_uv_wrap
+    import hy3dgen.texgen.utils.uv_warp_utils as _uvwarp_module
+
+    # hy3dgen's stock mesh_uv_wrap(mesh) only takes the mesh and leaves every
+    # xatlas option at its default — that produces hundreds of tiny single-face
+    # charts and a sparse atlas full of black gaps, which the inpaint stage
+    # then has to bridge (blurry). It also lacks the atlas_size / max_cost /
+    # uv_stats params the texture pipeline relies on. Replace it with the
+    # full-API version (patch lives here, not in site-packages, so it survives
+    # venv rebuilds).
+    def _mesh_uv_wrap_patched(mesh, atlas_size=0, padding=2, max_cost=8.0,
+                              max_iterations=3, brute_force=False,
+                              rotate_charts=True, bilinear=True):
+        import trimesh as _trimesh
+        import xatlas as _xatlas
+        if isinstance(mesh, _trimesh.Scene):
+            mesh = mesh.dump(concatenate=True)
+        if len(mesh.faces) > 500000000:
+            raise ValueError("The mesh has more than 500,000,000 faces, which is not supported.")
+        _atlas = _xatlas.Atlas()
+        _atlas.add_mesh(mesh.vertices.astype('float32'), mesh.faces.astype('uint32'))
+        _chart_opts = _xatlas.ChartOptions()
+        _chart_opts.max_cost = max_cost
+        _chart_opts.max_iterations = max_iterations
+        _chart_opts.fix_winding = True
+        _pack_opts = _xatlas.PackOptions()
+        _pack_opts.resolution = atlas_size
+        _pack_opts.padding = padding
+        _pack_opts.bruteForce = brute_force
+        _pack_opts.rotate_charts = rotate_charts
+        _pack_opts.bilinear = bilinear
+        _atlas.generate(_chart_opts, _pack_opts, verbose=False)
+        vmapping, indices, uvs = _atlas.get_mesh(0)
+        mesh.vertices = mesh.vertices[vmapping]
+        mesh.faces = indices
+        mesh.visual.uv = uvs
+        try:
+            mesh.metadata['uv_stats'] = {
+                'charts': _atlas.chart_count,
+                'width': _atlas.width,
+                'height': _atlas.height,
+                'utilization': float(_atlas.utilization),
+            }
+        except Exception:
+            pass
+        return mesh
+
+    _uvwarp_module.mesh_uv_wrap = _mesh_uv_wrap_patched
+    mesh_uv_wrap = _mesh_uv_wrap_patched
+
+    # Stock hy3dgen's Multiview_Diffusion_Net.__call__ hardcodes
+    # num_inference_steps=30 and accepts no such kwarg, so the user's
+    # "Texture Diffusion Steps" parameter would be ignored (and the call
+    # below would crash). Restore the tunable signature (patch lives here, not
+    # in site-packages, so it survives venv rebuilds).
+    from hy3dgen.texgen.utils import multiview_utils as _mv_module
+
+    def _mv_call_patched(self, input_images, control_images, camera_info,
+                         num_inference_steps=30):
+        from typing import List as _List
+        self.seed_everything(0)
+        if not isinstance(input_images, _List):
+            input_images = [input_images]
+        input_images = [input_image.resize((self.view_size, self.view_size))
+                        for input_image in input_images]
+        for i in range(len(control_images)):
+            control_images[i] = control_images[i].resize((self.view_size, self.view_size))
+            if control_images[i].mode == 'L':
+                control_images[i] = control_images[i].point(lambda x: 255 if x > 1 else 0, mode='1')
+        kwargs = dict(generator=torch.Generator(device=self.pipeline.device).manual_seed(0))
+        num_view = len(control_images) // 2
+        normal_image = [[control_images[i] for i in range(num_view)]]
+        position_image = [[control_images[i + num_view] for i in range(num_view)]]
+        camera_info_gen = [camera_info]
+        camera_info_ref = [[0]]
+        kwargs['width'] = self.view_size
+        kwargs['height'] = self.view_size
+        kwargs['num_in_batch'] = num_view
+        kwargs['camera_info_gen'] = camera_info_gen
+        kwargs['camera_info_ref'] = camera_info_ref
+        kwargs["normal_imgs"] = normal_image
+        kwargs["position_imgs"] = position_image
+        mvd_image = self.pipeline(input_images, num_inference_steps=num_inference_steps, **kwargs).images
+        return mvd_image
+
+    _mv_module.Multiview_Diffusion_Net.__call__ = _mv_call_patched
+
+    # diffusers' encode_prompt returns the negative embeddings on CPU when CFG
+    # is disabled (default in hy3dgen for non-turbo), while the positive
+    # embeddings come back on cuda — the very next torch.cat then raises
+    # "Expected all tensors to be on the same device". The old patched
+    # site-packages had an explicit device sync here; stock hy3dgen removed it.
+    # Re-apply it (patch lives here, not in site-packages, so it survives venv
+    # rebuilds).
+    import diffusers as _diffusers_cls
+    _orig_encode_prompt = _diffusers_cls.StableDiffusionPipeline.encode_prompt
+
+    def _encode_prompt_synced(self, *args, **kwargs):
+        _out = _orig_encode_prompt(self, *args, **kwargs)
+        if isinstance(_out, tuple) and len(_out) >= 2:
+            _pe, _npe = _out[0], _out[1]
+            if torch.is_tensor(_pe) and torch.is_tensor(_npe) and _npe.device != _pe.device:
+                _out = (_pe, _npe.to(_pe.device)) + tuple(_out[2:])
+        return _out
+
+    _diffusers_cls.StableDiffusionPipeline.encode_prompt = _encode_prompt_synced
+
+    # Stock hy3dgen tuned the delight stage down (cfg_image 2.5 -> 1.5, steps
+    # 75 -> 50). Restore the original values so delight=on produces the same
+    # results as the old patched site-packages (patch lives here, not in
+    # site-packages, so it survives venv rebuilds).
+    import hy3dgen.texgen.utils.dehighlight_utils as _delight_module
+
+    _orig_delight_init = _delight_module.Light_Shadow_Remover.__init__
+
+    def _delight_init_patched(self, config):
+        _orig_delight_init(self, config)
+        self.cfg_image = 2.5
+
+    _delight_module.Light_Shadow_Remover.__init__ = _delight_init_patched
+
+    def _delight_call_patched(self, image):
+        import numpy as _np
+        import cv2 as _cv2
+        image = image.resize((512, 512))
+        if image.mode == 'RGBA':
+            image_array = _np.array(image)
+            alpha_channel = image_array[:, :, 3]
+            erosion_size = 3
+            kernel = _np.ones((erosion_size, erosion_size), _np.uint8)
+            alpha_channel = _cv2.erode(alpha_channel, kernel, iterations=1)
+            image_array[alpha_channel == 0, :3] = 255
+            image_array[:, :, 3] = alpha_channel
+            image = Image.fromarray(image_array)
+            image_tensor = torch.tensor(_np.array(image) / 255.0).to(self.device)
+            alpha = image_tensor[:, :, 3:]
+            rgb_target = image_tensor[:, :, :3]
+        else:
+            image_tensor = torch.tensor(_np.array(image) / 255.0).to(self.device)
+            alpha = torch.ones_like(image_tensor)[:, :, :1]
+            rgb_target = image_tensor[:, :, :3]
+        image = image.convert('RGB')
+        image = self.pipeline(
+            prompt="",
+            image=image,
+            generator=torch.manual_seed(42),
+            height=512,
+            width=512,
+            num_inference_steps=75,
+            image_guidance_scale=self.cfg_image,
+            guidance_scale=self.cfg_text,
+        ).images[0]
+        image_tensor = torch.tensor(_np.array(image) / 255.0).to(self.device)
+        rgb_src = image_tensor[:, :, :3]
+        image = self.recorrect_rgb(rgb_src, rgb_target, alpha)
+        image = image[:, :, :3] * image[:, :, 3:] + torch.ones_like(image[:, :, :3]) * (1.0 - image[:, :, 3:])
+        image = Image.fromarray((image.cpu().numpy() * 255).astype(_np.uint8))
+        return image
+
+    _delight_module.Light_Shadow_Remover.__call__ = _delight_call_patched
+
+    # diffusers >= 0.39 refuses to execute the custom 'hunyuanpaint' pipeline
+    # code (bundled with hy3dgen itself) without trust_remote_code=True, but
+    # hy3dgen's Multiview_Diffusion_Net does not pass it. Inject the flag for
+    # this process so the paint pipeline loads. The code being executed is the
+    # installed hy3dgen dependency — trusted local code, not remote.
+    import diffusers as _diffusers
+    _orig_from_pretrained = _diffusers.DiffusionPipeline.from_pretrained.__func__
+
+    def _from_pretrained_trust_remote(cls, *args, **kwargs):
+        kwargs.setdefault("trust_remote_code", True)
+        return _orig_from_pretrained(cls, *args, **kwargs)
+
+    _diffusers.DiffusionPipeline.from_pretrained = classmethod(_from_pretrained_trust_remote)
 
     # Patch the multiview pipeline's RGBA->RGB conversion so transparent
     # backgrounds are composited onto WHITE instead of the stock gray (127,127,127).

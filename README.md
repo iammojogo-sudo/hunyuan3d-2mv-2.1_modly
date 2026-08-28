@@ -1,18 +1,6 @@
-# Hunyuan3D-2mv(2.0 version) — Modly Extension (local update 2.1)
+# Hunyuan3D-2mv — Modly Extension (v2.1)
 
 Generate textured 3D meshes from images using Tencent's Hunyuan3D-2mv. Three nodes:
-
-USING THE GENERATE MESH NODE: https://youtu.be/qiTh1GerQoA -single image
-
-USING THE GENERATE TEXTURE NODE: https://youtu.be/pK5mSSb2wIo -single image
-
-RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/DWlPblUVh3w - single image delighting-unmatched
-
-RESULT OF TEXTURE NODE EXAMPLE IMAGE ONLY: https://youtu.be/7htMHkWO4b8 - single image delighting OFF - changes settings
-
-USING THE APPLY TEXTURE NODE: https://youtu.be/OPavm7HPohI - Previous mapped image only
-
-
 
 | Node | What it does |
 |------|-------------|

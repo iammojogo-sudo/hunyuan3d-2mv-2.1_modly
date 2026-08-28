@@ -304,32 +304,42 @@ def _auto_tile_folder(folder_path, output_dir, shape_views=4):
         # Fall through with the original images
 
     # ── Step 2: Pad each image with TRANSPARENT margins to equal size ────
-    _max_w = max(i.width for i in imgs)
-    _max_h = max(i.height for i in imgs)
+    # Choose grid layout first, then size cells so the tile's aspect ratio
+    # matches what the bridge's _detect_grid will pick (closest to nc/nr).
+    if shape_views > 4:
+        cols, rows = 2, 3
+    else:
+        cols, rows = 2, 2
+    _raw_max_w = max(i.width for i in imgs)
+    _raw_max_h = max(i.height for i in imgs)
+    # Cells are square (cw == ch).  Tile aspect = cols/rows, which is what
+    # _detect_grid expects (1.0 for 2×2, 0.667 for 2×3, 1.5 for 3×2).
+    _cell = max(_raw_max_w, _raw_max_h)
+    _cw = _ch = _cell
 
     _padded = []
     for _i, img in enumerate(imgs):
-        canvas = _PIL.new("RGBA", (_max_w, _max_h), (0, 0, 0, 0))  # fully transparent
-        x = (_max_w - img.width) // 2
-        y = (_max_h - img.height) // 2
-        canvas.paste(img, (x, y), img)
+        canvas = _PIL.new("RGBA", (_cw, _ch), (0, 0, 0, 0))  # fully transparent
+        # Scale down if larger than cell, keeping aspect ratio
+        _scale = min(_cw / img.width, _ch / img.height, 1.0)
+        _nw = int(img.width * _scale)
+        _nh = int(img.height * _scale)
+        _resized = img.resize((_nw, _nh), _PIL.LANCZOS)
+        x = (_cw - _nw) // 2
+        y = (_ch - _nh) // 2
+        canvas.paste(_resized, (x, y), _resized)
         _padded.append(canvas)
-        # Save for user inspection
         _stem = os.path.splitext(os.path.basename(_ordered[_i]))[0]
         _padded_path = os.path.join(str(output_dir), f"padded_{_stem}.png")
         canvas.save(_padded_path)
 
     # ── Step 3: Tile the padded images into a grid ─────────────────────
-    if len(_padded) <= 4:
-        cols, rows = 2, 2
-    else:
-        cols, rows = 2, 3
-    tile = _PIL.new("RGBA", (_max_w * cols, _max_h * rows), (0, 0, 0, 0))  # transparent bg
+    tile = _PIL.new("RGBA", (_cw * cols, _ch * rows), (0, 0, 0, 0))  # transparent bg
     _positions = [(c, r) for r in range(rows) for c in range(cols)]
     for idx, img in enumerate(_padded):
         if idx < len(_positions):
             col, row = _positions[idx]
-            tile.paste(img, (col * _max_w, row * _max_h), img)
+            tile.paste(img, (col * _cw, row * _ch), img)
 
     tile_path = output_dir / "folder_tiled.png"
     tile.save(str(tile_path))
@@ -586,15 +596,16 @@ class Hunyuan3DmvGenerator(BaseGenerator):
             else:
                 _split = Image.open(tiled_path).convert("RGBA")
                 _w, _h = _split.size
-                # Always detect grid from image aspect ratio.  n_views only
-                # controls how many cells to *extract* (reading order).
+                # Detect grid using the same closest-distance logic as
+                # the bridge's _detect_grid so both agree on the layout.
                 _img_aspect = _w / _h if _h > 0 else 1.0
-                if _img_aspect > 1.25:
-                    _ncols, _nrows = 3, 2
-                elif _img_aspect < 0.8:
-                    _ncols, _nrows = 2, 3
-                else:
-                    _ncols, _nrows = 2, 2
+                _candidates = [(2, 2), (2, 3), (3, 2)]
+                _best, _best_err = (2, 2), float("inf")
+                for _nc, _nr in _candidates:
+                    _err = abs(_img_aspect - _nc / _nr)
+                    if _err < _best_err:
+                        _best, _best_err = (_nc, _nr), _err
+                _ncols, _nrows = _best
                 _cw, _ch = _w // _ncols, _h // _nrows
                 _cell_positions = [(_cw * (i % _ncols), _ch * (i // _ncols)) for i in range(_ncols * _nrows)]
                 _cells = []

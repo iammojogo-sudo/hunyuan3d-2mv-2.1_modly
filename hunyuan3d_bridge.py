@@ -9,14 +9,14 @@ import torch
 from pathlib import Path
 from PIL import Image
 
-# Safety checks for CUDA/Ampere features (will be silently skipped on macOS / CPU)
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(True)
+# Ampere (RTX 3050 etc.) speedups for the diffusion matmuls — free ~10-20% win.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+# Quality-neutral attention speedups on Ampere (RTX 3050 etc.).
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cuda.enable_math_sdp(True)
 
 # Watchdog: shared timestamp updated by report(), checked by a daemon thread.
 # If no progress for STALL_TIMEOUT_MINUTES, the watchdog kills the process.
@@ -44,6 +44,10 @@ def _start_watchdog():
     t.start()
 
 
+# Shape-generation tunables (6 GB friendly defaults). Mesh resolution / view
+# count / guidance are read from node params via `args` inside generate_mesh().
+
+
 def setup_paths(args):
     hy3dgen_path = args.get("hy3dgen_path")
     if hy3dgen_path and os.path.isdir(hy3dgen_path):
@@ -52,6 +56,9 @@ def setup_paths(args):
 
 def remove_background(img):
     """Remove background from an image using rembg (CPU only). Returns RGBA."""
+    # Lazily create a persistent ONNX session (reused across calls).
+    # Force CPU — the bridge uses CUDA for PyTorch and onnxruntime's
+    # CUDA provider often conflicts with the active CUDA context.
     if not hasattr(remove_background, "_session"):
         try:
             from rembg import new_session
@@ -63,6 +70,11 @@ def remove_background(img):
     if remove_background._session is None:
         return img.convert("RGBA") if img.mode != "RGBA" else img
 
+    # If the image already has a meaningful alpha channel (transparent pixels),
+    # it was already background-removed by the generator.  Running rembg a
+    # second time converts RGBA→RGB→RGBA, creating a new alpha matte that
+    # doesn't perfectly align with the original edges — producing dark noise
+    # outlines around the subject.  Skip to avoid double-rembg artifacts.
     rgba = img.convert("RGBA") if img.mode != "RGBA" else img
     import numpy as _np
     _alpha = _np.array(rgba)[:, :, 3]
@@ -80,9 +92,15 @@ def remove_background(img):
 
 
 def report(pct, step, subtext=""):
+    # Coerce to int to match the progress_cb(percent: int, …) contract.
     pct = int(round(pct))
     _touch_activity()
+    # JSON line drives the structured % bar…
     print(json.dumps({"type": "progress", "pct": pct, "step": step, "subtext": subtext}), flush=True)
+    # …and a plaintext mirror goes to the live console/log. The host forwards
+    # non-JSON stdout/stderr lines in realtime, so every stage/step is visible
+    # there even if the structured bar coalesces. Starts with 'p' so the JSON
+    # reader in generator.py doesn't mistake it for a broken JSON fragment.
     if subtext:
         print(f"progress {pct}% | {step} — {subtext}", flush=True)
     else:
@@ -90,7 +108,17 @@ def report(pct, step, subtext=""):
 
 
 def render_orthographic_view(mesh, azimuth_deg=0, elevation_deg=0, resolution=512):
-    """Render a trimesh mesh from a given azimuth/elevation."""
+    """Render a trimesh mesh from a given azimuth/elevation.
+
+    Args:
+        mesh: trimesh.Trimesh mesh
+        azimuth_deg: azimuth in degrees (0=front, 90=right, 180=back, -90=left)
+        elevation_deg: elevation in degrees (+90=top, -90=bottom)
+        resolution: output resolution in pixels (square)
+
+    Returns:
+        PIL.Image in RGBA mode
+    """
     import numpy as np
     from trimesh.ray.ray_triangle import RayMeshIntersector
     inter = RayMeshIntersector(mesh)
@@ -169,9 +197,18 @@ def render_orthographic_view(mesh, azimuth_deg=0, elevation_deg=0, resolution=51
 
 
 def _repair_mesh(mesh):
-    """Remove degenerate faces and marching-cubes bridge artifacts."""
+    """Remove degenerate faces and marching-cubes bridge artifacts.
+
+    1. Removes degenerate (near-zero-area) faces.
+    2. Removes "bridge" faces — faces whose longest edge is >> median, which
+       indicates marching cubes bridged across noise connecting separate parts
+       (e.g. hand to body).  Uses a 10×-median threshold on longest edge.
+    3. Splits into connected components and drops tiny orphan components.
+    Preserves UV coordinates if present.
+    """
     import numpy as np
     try:
+        # ── Step 1: degenerate faces ──
         areas = mesh.area_faces
         median = float(np.median(areas)) if len(areas) > 0 else 1.0
         threshold = max(1e-12, median * 1e-6)
@@ -183,9 +220,11 @@ def _repair_mesh(mesh):
         mesh.update_faces(mesh.unique_faces())
         mesh.remove_unreferenced_vertices()
 
+        # ── Step 2: bridge faces (long edges from MC noise) ──
         verts = mesh.vertices
         faces = mesh.faces
         if len(faces) > 0:
+            # Compute longest edge per face
             v0 = verts[faces[:, 0]]
             v1 = verts[faces[:, 1]]
             v2 = verts[faces[:, 2]]
@@ -194,7 +233,7 @@ def _repair_mesh(mesh):
             e20 = np.linalg.norm(v0 - v2, axis=1)
             longest = np.maximum(e01, np.maximum(e12, e20))
             med_edge = float(np.median(longest)) if len(longest) > 0 else 1.0
-            bridge_thresh = max(med_edge * 10.0, 0.5)
+            bridge_thresh = max(med_edge * 10.0, 0.5)  # 10× median or 0.5 units
             bridge_mask = longest > bridge_thresh
             if bridge_mask.any():
                 n_bridges = int(bridge_mask.sum())
@@ -203,12 +242,14 @@ def _repair_mesh(mesh):
                 print(json.dumps({"type": "log",
                     "message": f"Removed {n_bridges} bridge faces (longest edge > {bridge_thresh:.3f})"}), flush=True)
 
+        # ── Step 3: drop tiny orphan components ──
         if len(mesh.faces) > 0:
             import trimesh as _trimesh
             components = mesh.split(only_watertight=False)
             if len(components) > 1:
                 face_counts = np.array([len(c.faces) for c in components])
                 largest = int(face_counts.max())
+                # Keep components with ≥ 1% of the largest
                 keep_mask = face_counts >= max(10, largest * 0.01)
                 n_dropped = int((~keep_mask).sum())
                 if n_dropped > 0:
@@ -223,9 +264,20 @@ def _repair_mesh(mesh):
 
 
 def _compute_vertex_colors(mesh, views, output_size=512):
-    """Assign per-vertex colors by projecting the mesh onto cardinal views."""
+    """Assign per-vertex colors by projecting the mesh onto 4 cardinal views.
+
+    This is an alternative to the PBR pipeline — it bypasses UV unwrapping,
+    diffusion, and texture baking entirely. Each face is colored by the camera
+    whose view direction best matches its normal, then vertex colors are
+    averaged from adjacent faces.
+
+    Use as a diagnostic: if vertex colors look correct but UV textures don't,
+    the problem is UV mapping. If both look wrong, the views or shape are off.
+    """
     import numpy as np
 
+    # Load view images as numpy RGB float64 arrays.  views values may be
+    # PIL.Image objects (already loaded by remove_bg) or file-path strings.
     view_imgs = {}
     for name in ("front", "left", "back", "right", "front_left", "top", "bottom"):
         v = views.get(name)
@@ -237,6 +289,7 @@ def _compute_vertex_colors(mesh, views, output_size=512):
             img = v
         else:
             continue
+        # Composite onto white if RGBA, otherwise convert transparent=black.
         if img.mode == "RGBA":
             white_bg = Image.new("RGB", img.size, (255, 255, 255))
             white_bg.paste(img, mask=img.getchannel("A"))
@@ -254,13 +307,30 @@ def _compute_vertex_colors(mesh, views, output_size=512):
     faces = np.asarray(mesh.faces)
     face_normals = np.asarray(mesh.face_normals, dtype=np.float64)
 
+    # Bounding-box normalisation so the orthographic projection maps the whole
+    # mesh into [0,1] regardless of absolute coordinates.
     bmin = verts.min(axis=0)
     bmax = verts.max(axis=0)
     extent = (bmax - bmin).max()
     if extent < 1e-8:
         extent = 1.0
-    half = extent * 0.55
+    half = extent * 0.55  # small pad — 5% margin to avoid edge clipping
 
+    # --- Camera definitions (orthographic) ---
+    # Each camera maps 3-D coordinates to a 2-D (u,v) ∈ [0,1].  The
+    # view-axis, up-axis and right-axis form an orthonormal basis.
+    # The convention matches Hunyuan3D-2mv / Era3D: Z is forward, Y is up,
+    # X is right.
+    #
+    #   front       = camera looks from +Z (azimuth 0°)
+    #   back        = camera looks from -Z (azimuth 180°)
+    #   left        = camera looks from -X (azimuth 270° / Era3D "left")
+    #   right       = camera looks from +X (azimuth 90°  / Era3D "right")
+    #   front_right = camera looks from azimuth ~45°  (+X+Z diagonal)
+    #   front_left  = camera looks from azimuth ~315° (-X+Z diagonal)
+
+    # "view" = direction from object to camera (dot with face normal > 0 = visible).
+    # "right" / "up" = image-plane axes; cross(right, up) must equal view.
     cameras = {
         "front": {
             "view":   np.array([ 0., 0., 1.]),
@@ -307,11 +377,16 @@ def _compute_vertex_colors(mesh, views, output_size=512):
         if img is None:
             continue
 
+        # Face weight: cosine between face normal and camera view direction
         w = np.dot(face_normals, cam["view"])
-        w = np.maximum(w, 0.0)
+        w = np.maximum(w, 0.0)  # only front-facing faces get colour
         if w.max() < 1e-8:
             continue
 
+        # Project face centres onto the camera's image plane.
+        # V is flipped because screen-space Y goes up→down while
+        # world-space Y goes bottom→top.  Without the flip the
+        # top of the object samples from image bottom and vice-versa.
         centres = verts[faces].mean(axis=1)
         u = np.dot(centres, cam["right"]) / half * 0.5 + 0.5
         v = 1.0 - (np.dot(centres, cam["up"]) / half * 0.5 + 0.5)
@@ -319,17 +394,19 @@ def _compute_vertex_colors(mesh, views, output_size=512):
         u_px = np.clip((u * output_size).astype(np.int32), 0, output_size - 1)
         v_px = np.clip((v * output_size).astype(np.int32), 0, output_size - 1)
 
-        colors = img[v_px, u_px]
+        colors = img[v_px, u_px]  # (N_faces, 3)
         face_colors += colors * w[:, None]
         face_wsum   += w
 
+    # Normalise face colours, then propagate to vertices (average over
+    # adjacent faces) to get smooth per-vertex colours.
     valid_faces = face_wsum > 1e-8
     face_colors[valid_faces] /= face_wsum[valid_faces, None]
     face_colors = np.clip(face_colors, 0, 255)
 
     vert_colors = np.zeros((len(verts), 3), dtype=np.float64)
     vert_wsum   = np.zeros(len(verts), dtype=np.float64)
-    face_areas  = mesh.area_faces
+    face_areas  = mesh.area_faces  # weight by face area for smoother blending
 
     for fi, (f_verts, area) in enumerate(zip(faces, face_areas)):
         if face_wsum[fi] < 1e-8:
@@ -343,6 +420,7 @@ def _compute_vertex_colors(mesh, views, output_size=512):
     vert_colors[valid_verts] /= vert_wsum[valid_verts, None]
     vert_colors = np.clip(vert_colors, 0, 255).astype(np.uint8)
 
+    # Store as RGBA vertex colours on the mesh
     vc = np.zeros((len(verts), 4), dtype=np.uint8)
     vc[:, :3] = vert_colors
     vc[:, 3] = 255
@@ -358,14 +436,24 @@ def _compute_vertex_colors(mesh, views, output_size=512):
     return mesh
 
 
+
 def _resolve_hf_cache(repo_id, subfolder):
-    """Resolve repo_id/subfolder to a LOCAL directory."""
+    """Resolve repo_id/subfolder to a LOCAL directory, never touching the
+    network. `repo_id` may be either a HF repo id (falls back to
+    ~/.cache/hy3dgen) or an explicit local path (e.g. Modly's models/ dir).
+
+    When an explicit local path is given and contains `subfolder`, it is used
+    directly. This keeps a run fully offline — weights are read from Modly's
+    models/ folder, which setup.py / the manifest download populates.
+    """
+    # Explicit local directory (Modly models/ dir): use it directly.
     if os.path.isdir(repo_id):
         local_path = os.path.join(repo_id, subfolder) if subfolder else repo_id
         if os.path.isdir(local_path):
             os.environ["HY3DGEN_MODELS"] = ""
             return local_path, "", ""
         if os.path.isdir(repo_id) and any(Path(repo_id).iterdir()):
+            # repo_id already points at the subfolder contents
             os.environ["HY3DGEN_MODELS"] = ""
             return repo_id, "", ""
         raise RuntimeError(
@@ -390,9 +478,10 @@ def _resolve_hf_cache(repo_id, subfolder):
     os.environ["HY3DGEN_MODELS"] = ""
     return local_path, "", ""
 
-
 def _bridge_first_load(args):
-    """First-load bridge bootstrap."""
+    """First-load bridge: link weights Modly placed anywhere (sibling node
+    dirs / HF cache) into the layout hy3dgen expects, and repair out-of-extension
+    files (venv site-packages) if needed. Non-fatal — logs and moves on."""
     try:
         from hunyuan3d_bootstrap import ensure_bridged
         model_dir = args.get("model_dir") or args.get("model_cache") or ""
@@ -414,6 +503,11 @@ def _bridge_first_load(args):
 
 def generate_mesh(args):
     """Shape model only: load views, run shape pipeline, save untextured mesh."""
+    import torch
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
     _bridge_first_load(args)
@@ -426,12 +520,19 @@ def generate_mesh(args):
     guidance_scale = float(args.get("guidance_scale", 5.0))
     dual_guidance_scale = float(args.get("dual_guidance_scale", 10.5))
 
+    # Reference views for the shape model, handled EXACTLY like the texture
+    # node (no background invention, original pixels preserved).
+    # input_mode controls how the wired image is interpreted:
+    #   "single" = whole image is the single subject view (no split)
+    #   "tiled"  = grid split into views (2x2 for ≤4, 2x3 for 5-6)
+    #   "folder" = same as tiled (auto-tile was done by generator.py)
     tiled_path = args.get("tiled_path")
     if not tiled_path or not os.path.exists(tiled_path):
         print(json.dumps({"type": "error", "message": "No input image (tiled_path) found"}), flush=True)
         return
 
     input_mode = str(args.get("input_mode", "tiled")).lower()
+
     _src_rgba = Image.open(tiled_path).convert("RGBA")
 
     if input_mode == "single":
@@ -447,7 +548,18 @@ def generate_mesh(args):
         w, h = _src_rgba.size
         _aspect = w / h if h > 0 else 1.0
 
+        # Auto-detect grid layout from image aspect ratio instead of
+        # hardcoding.  For a 2-col × N-row grid the aspect ≈ 2/N; for
+        # 3-col × 2-row it ≈ 3/2.  We pick the layout whose expected
+        # aspect is closest to what we see.
         def _detect_grid(width, height, n_views):
+            """Return (ncols, nrows) best matching the image shape.
+
+            Grid layout is determined purely from the image aspect ratio.
+            n_views only controls how many cells to *extract* (reading order),
+            not the grid layout itself.  This way a 6-view 3×2 tiled image is
+            always sliced as 3×2 even when the user only requests 2 views.
+            """
             if n_views <= 1:
                 return 1, 1
             candidates = [(2, 2), (2, 3), (3, 2)]
@@ -466,6 +578,7 @@ def generate_mesh(args):
             f"Splitting tiled image {w}×{h} (aspect {_aspect:.2f}) "
             f"as {_ncols}×{_nrows} grid, {_cw}×{_ch} per cell"}), flush=True)
 
+        # Save a debug overlay showing the grid on the source image
         try:
             import copy as _copy
             _dbg = _copy.deepcopy(_src_rgba)
@@ -489,6 +602,13 @@ def generate_mesh(args):
         if _n == 1:
             _raw_views = {"front": _src_rgba}
         else:
+            # Build cell→name mapping based on detected grid.
+            # For 2-col grids the reading order is:
+            #   (0,0) (1,0)
+            #   (0,1) (1,1)
+            #   (0,2) (1,2)
+            # Names follow the render_views convention:
+            #   front, left, back, right, top, bottom
             _VIEW_ORDER_2COL = ["front", "left", "back", "right", "top", "bottom"]
             _VIEW_ORDER_3COL = ["front", "left", "right", "back", "top", "bottom"]
             _view_order = _VIEW_ORDER_3COL if _ncols == 3 else _VIEW_ORDER_2COL
@@ -501,6 +621,11 @@ def generate_mesh(args):
                 _name = _view_order[_idx] if _idx < len(_view_order) else f"view{_idx}"
                 _raw_views[_name] = _cell
 
+    # Ensure RGBA with transparent background (generator already ran rembg,
+    # but remove_background is a safety net if that failed). Pass RGBA directly
+    # to the pipeline so its built-in ImageProcessorV2.recenter() can properly
+    # isolate the object via the alpha channel — this avoids the white-fringe
+    # halo that would bloat the mesh silhouette.
     view_dir = args.get("view_dir") or os.path.dirname(output_path)
     shape_views = {}
     for name, img in _raw_views.items():
@@ -516,34 +641,25 @@ def generate_mesh(args):
     report(10, f"Loading shape model ({subfolder})…")
     real_path, real_sub, _ = _resolve_hf_cache(model_path, subfolder)
     report(13, "Resolved model cache")
-    cleanup_cuda()
-    
+    torch.cuda.empty_cache()
     report(15, "Loading pipeline weights…")
     shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
         real_path, subfolder=real_sub, variant="fp16", device="cpu",
         local_files_only=True,
     )
+    report(18, "Moving VAE to GPU…")
+    shape_pipeline.vae.to("cuda")
+    torch.cuda.empty_cache()
+    report(20, "Moving DiT model to GPU…")
+    shape_pipeline.model.to("cuda")
+    torch.cuda.empty_cache()
+    report(22, "Moving conditioner to GPU…")
+    shape_pipeline.conditioner.to("cuda")
+    shape_pipeline.device = torch.device("cuda")
 
-    # Dynamic device allocation: CUDA > MPS > CPU
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-
-    report(18, f"Moving VAE to {device}…")
-    shape_pipeline.vae.to(device)
-    cleanup_cuda()
-
-    report(20, f"Moving DiT model to {device}…")
-    shape_pipeline.model.to(device)
-    cleanup_cuda()
-
-    report(22, f"Moving conditioner to {device}…")
-    shape_pipeline.conditioner.to(device)
-    shape_pipeline.device = device
-
+    # Monkey-patch the image processor's view2idx to accept top/bottom views.
+    # The model's encoder dynamically adjusts to N views (handled below), but
+    # the MVImageProcessorV2 dictionary only maps 4 view names by default.
     report(23, "Patching view indices…")
     if hasattr(shape_pipeline.image_processor, 'view2idx'):
         _v2i = dict(shape_pipeline.image_processor.view2idx)
@@ -553,13 +669,8 @@ def generate_mesh(args):
             shape_pipeline.image_processor.view2idx = _v2i
             print(json.dumps({"type": "log",
                 "message": "[shape] patched image_processor.view2idx for top/bottom views"}), flush=True)
-
     report(24, "Enabling optimizations…")
-    if hasattr(shape_pipeline, 'enable_flashvdm'):
-        try:
-            shape_pipeline.enable_flashvdm()
-        except Exception:
-            pass
+    shape_pipeline.enable_flashvdm()
     try:
         shape_pipeline.enable_attention_slicing()
     except Exception:
@@ -568,7 +679,6 @@ def generate_mesh(args):
         shape_pipeline.enable_xformers_memory_efficient_attention()
     except Exception:
         pass
-
     if len(shape_views) > 0:
         encoder = shape_pipeline.conditioner.main_image_encoder
         n = len(shape_views)
@@ -580,7 +690,6 @@ def generate_mesh(args):
             emb = torch.from_numpy(get_1d_sincos_pos_embed_from_grid(encoder.model.config.hidden_size, pos)).float()
             emb = emb.unsqueeze(1).repeat(1, encoder.num_patches, 1)
             encoder.view_embed = emb.unsqueeze(0).to(device=encoder.model.device, dtype=encoder.model.dtype)
-
     report(25, "Shape model loaded — generating mesh")
 
     _has_triton = False
@@ -589,21 +698,20 @@ def generate_mesh(args):
         _has_triton = True
     except Exception:
         _has_triton = False
-
-    if _has_triton and device.type == "cuda":
+    if _has_triton:
         try:
             shape_pipeline.compile()
             report(26, "Compiled shape model (torch.compile)")
         except Exception as e:
             report(26, "Shape compile skipped: %s" % e)
     else:
-        report(26, "Shape compile skipped: Triton/CUDA not active")
+        report(26, "Shape compile skipped: Triton not installed")
 
     def shape_callback(step_idx, t, outputs):
         pct = 30 + int(55 * (step_idx + 1) / max(1, num_inference_steps))
         report(pct, f"Generating mesh ({step_idx + 1}/{num_inference_steps})")
         if step_idx % 4 == 0:
-            cleanup_cuda()
+            torch.cuda.empty_cache()
 
     report(30, f"Generating mesh (1/{num_inference_steps})…")
     latents = shape_pipeline(
@@ -616,7 +724,7 @@ def generate_mesh(args):
     report(88, "Decoding volume (VAE decode)")
     latents = 1. / shape_pipeline.vae.scale_factor * latents
     latents = shape_pipeline.vae(latents)
-    cleanup_cuda()
+    torch.cuda.empty_cache()
 
     report(90, "Decoding volume (volume grid)")
     mesh_outputs = shape_pipeline.vae.latents2mesh(
@@ -624,7 +732,7 @@ def generate_mesh(args):
         num_chunks=20000, octree_resolution=octree_resolution,
         enable_pbar=True,
     )
-    cleanup_cuda()
+    torch.cuda.empty_cache()
 
     report(92, "Converting to mesh")
     from hy3dgen.shapegen.pipelines import export_to_trimesh
@@ -645,6 +753,7 @@ def generate_mesh(args):
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     mesh.export(output_path)
 
+    # Final done is reported by generator.py after rendering views (95-100%).
     print(json.dumps({"type": "done", "output_path": output_path}), flush=True)
     os._exit(0)
 
@@ -654,11 +763,6 @@ def cleanup_cuda():
         torch.cuda.empty_cache()
         try:
             torch.cuda.synchronize()
-        except Exception:
-            pass
-    elif torch.backends.mps.is_available():
-        try:
-            torch.mps.empty_cache()
         except Exception:
             pass
 

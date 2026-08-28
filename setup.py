@@ -44,6 +44,7 @@ RUNTIME_DEPS = [
     "einops",
     "safetensors",
     "trimesh",
+    "fast_simplification",  # trimesh.simplify_quadric_decimation (mesh decimation)
     "Rtree",  # spatial index for trimesh ray intersection
     "rembg",
     "onnxruntime",  # rembg CPU session (never conflicts with CUDA torch)

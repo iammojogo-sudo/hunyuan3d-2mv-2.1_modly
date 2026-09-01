@@ -132,6 +132,10 @@ def _torch_index_and_pkgs(gpu_sm: int, cuda_version: int, torch_flavor: str, is_
         return "https://download.pytorch.org/whl/cu128", ["torch==2.7.0", "torchvision==0.22.0", "torchaudio==2.7.0"]
     if gpu_sm >= 70:
         return "https://download.pytorch.org/whl/cu124", ["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"]
+    # The prebuilt custom_rasterizer_kernel .pyd needs cudart64_12.dll (CUDA 12)
+    # at minimum, so always use cu124 on Windows even for older/unknown GPUs.
+    if is_win:
+        return "https://download.pytorch.org/whl/cu124", ["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"]
     return "https://download.pytorch.org/whl/cu118", ["torch==2.5.1", "torchvision==0.20.1", "torchaudio==2.5.1"]
 
 

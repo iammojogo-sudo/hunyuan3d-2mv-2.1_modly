@@ -24,8 +24,9 @@ from PIL import Image
 # Shared utilities from the shape bridge
 from hunyuan3d_bridge import (
     report, cleanup_cuda,
-    setup_paths,
+    setup_paths, _touch_activity,
 )
+import hunyuan3d_bridge as _bridge
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -33,18 +34,12 @@ torch.backends.cudnn.benchmark = True
 
 
 _BRIDGE_STALL_TIMEOUT = 45
-_last_activity = time.time()
-
-
-def _touch_activity():
-    global _last_activity
-    _last_activity = time.time()
 
 
 def _watchdog_loop():
     while True:
         time.sleep(60)
-        if time.time() - _last_activity > _BRIDGE_STALL_TIMEOUT * 60:
+        if time.time() - _bridge._last_activity > _BRIDGE_STALL_TIMEOUT * 60:
             print(json.dumps({"type": "error", "message": f"No progress for {_BRIDGE_STALL_TIMEOUT} min — aborting"}), flush=True)
             os._exit(1)
 

@@ -365,8 +365,265 @@
         "image"
       ],
       "output": "mesh",
-      "description": "Maps an upscaled UV texture atlas (PNG/JPG) onto a mesh that already has UV coordinates. No diffusion, no bake — just applies the image to the existing UVs and exports GLB. Use this to feed a super-resolved atlas from an external upscaler back onto the original mesh.",
-      "params_schema": []
+      "description": "Maps texture atlas image(s) onto a mesh that already has UV coordinates and exports a PBR GLB (albedo + normal + metallic/roughness). Point Texture Folder at your maps or wire the albedo image in. No diffusion, no bake.",
+      "params_schema": [
+        {
+          "id": "mode",
+          "label": "Mode",
+          "type": "select",
+          "default": "pbr",
+          "options": [
+            {
+              "value": "pbr",
+              "label": "PBR (albedo + maps)"
+            },
+            {
+              "value": "albedo",
+              "label": "Albedo only"
+            }
+          ],
+          "tooltip": "PBR reads normal/roughness/displacement from Texture Folder (or explicit paths) into glTF slots. Albedo only maps the wired image and ignores all map settings."
+        },
+        {
+          "id": "albedo_source",
+          "label": "Albedo Source",
+          "type": "select",
+          "default": "image",
+          "options": [
+            {
+              "value": "image",
+              "label": "Wired image input"
+            },
+            {
+              "value": "folder",
+              "label": "Folder texturemap"
+            }
+          ],
+          "tooltip": "Wired image input uses the wired image as albedo (folder texturemap ignored). Folder texturemap ignores the wired image and uses texturemap from the folder."
+        },
+        {
+          "id": "texture_folder",
+          "label": "Texture Folder",
+          "type": "string",
+          "default": "",
+          "tooltip": "Folder with your PBR maps, found by filename: texturemap (albedo), normalmap, roughnessmap (or specularmap, inverted), displacementmap (height), maskmap (painted region colors — a paintable guide is saved next to each Texture Mesh output)."
+        },
+        {
+          "id": "rough_mode",
+          "label": "Roughness Mode",
+          "type": "select",
+          "default": "auto",
+          "options": [
+            {
+              "value": "auto",
+              "label": "Auto (by filename)"
+            },
+            {
+              "value": "roughness",
+              "label": "Roughness (use as-is)"
+            },
+            {
+              "value": "specular",
+              "label": "Specular (invert to roughness)"
+            }
+          ],
+          "tooltip": "How to read the Roughness / Specular map. Auto: filenames with 'rough' are used as-is, 'spec'/'smooth' are inverted."
+        },
+        {
+          "id": "displacement_strength",
+          "label": "Displacement Strength",
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 0.2,
+          "step": 0.005,
+          "tooltip": "Real geometry displacement as a fraction of mesh size across the full black-to-white range. 0 = geometry untouched (map still feeds occlusion)."
+        },
+        {
+          "id": "displacement_subdiv",
+          "label": "Displacement Subdivisions",
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 3,
+          "step": 1,
+          "tooltip": "Loop-subdivision rounds before displacement so low-poly meshes displace smoothly. Each round ~4x faces. 0 = off."
+        },
+        {
+          "id": "occlusion_from_height",
+          "label": "Occlusion From Height",
+          "type": "select",
+          "default": "on",
+          "options": [
+            {
+              "value": "on",
+              "label": "On (soft cavity AO)"
+            },
+            {
+              "value": "off",
+              "label": "Off"
+            }
+          ],
+          "tooltip": "Derive soft cavity occlusion from the height map into the ORM red channel (Godot reads it as AO). Off leaves it white."
+        },
+        {
+          "id": "normal_scale",
+          "label": "Normal Scale",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 4,
+          "step": 0.1,
+          "tooltip": "glTF normalTexture strength. Lower flattens the normal effect, higher exaggerates it."
+        },
+        {
+          "id": "normal_flip_y",
+          "label": "Flip Normal Y",
+          "type": "select",
+          "default": "off",
+          "options": [
+            {
+              "value": "off",
+              "label": "Off (OpenGL / glTF)"
+            },
+            {
+              "value": "on",
+              "label": "On (DirectX)"
+            }
+          ],
+          "tooltip": "Flip the normal map green channel. Turn On if your maps were authored for DirectX (green-down)."
+        },
+        {
+          "id": "metallic_factor",
+          "label": "Metallic Factor",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Uniform metallic factor packed into the ORM blue channel (0 = dielectric like wood/fabric, 1 = metal)."
+        },
+        {
+          "id": "mask_red_metallic",
+          "label": "Mask Red Metallic",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Metallic for RED regions of maskmap.png (paint pure #FF0000). White areas use Metallic Factor."
+        },
+        {
+          "id": "mask_red_rough",
+          "label": "Mask Red Roughness",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 2,
+          "step": 0.05,
+          "tooltip": "Roughness multiplier for RED mask regions (1 = keep map value, 0.5 = half as rough)."
+        },
+        {
+          "id": "mask_green_metallic",
+          "label": "Mask Green Metallic",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Metallic for GREEN regions of maskmap.png (paint pure #00FF00)."
+        },
+        {
+          "id": "mask_green_rough",
+          "label": "Mask Green Roughness",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 2,
+          "step": 0.05,
+          "tooltip": "Roughness multiplier for GREEN mask regions (1 = keep map value)."
+        },
+        {
+          "id": "mask_blue_metallic",
+          "label": "Mask Blue Metallic",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Metallic for BLUE regions of maskmap.png (paint pure #0000FF)."
+        },
+        {
+          "id": "mask_blue_rough",
+          "label": "Mask Blue Roughness",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 2,
+          "step": 0.05,
+          "tooltip": "Roughness multiplier for BLUE mask regions (1 = keep map value)."
+        },
+        {
+          "id": "mask_yellow_metallic",
+          "label": "Mask Yellow Metallic",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Metallic for YELLOW regions of maskmap.png (paint pure #FFFF00)."
+        },
+        {
+          "id": "mask_yellow_rough",
+          "label": "Mask Yellow Roughness",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 2,
+          "step": 0.05,
+          "tooltip": "Roughness multiplier for YELLOW mask regions (1 = keep map value)."
+        },
+        {
+          "id": "mask_magenta_metallic",
+          "label": "Mask Magenta Metallic",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Metallic for MAGENTA regions of maskmap.png (paint pure #FF00FF)."
+        },
+        {
+          "id": "mask_magenta_rough",
+          "label": "Mask Magenta Roughness",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 2,
+          "step": 0.05,
+          "tooltip": "Roughness multiplier for MAGENTA mask regions (1 = keep map value)."
+        },
+        {
+          "id": "mask_cyan_metallic",
+          "label": "Mask Cyan Metallic",
+          "type": "number",
+          "default": 0.0,
+          "min": 0,
+          "max": 1,
+          "step": 0.05,
+          "tooltip": "Metallic for CYAN regions of maskmap.png (paint pure #00FFFF)."
+        },
+        {
+          "id": "mask_cyan_rough",
+          "label": "Mask Cyan Roughness",
+          "type": "number",
+          "default": 1.0,
+          "min": 0,
+          "max": 2,
+          "step": 0.05,
+          "tooltip": "Roughness multiplier for CYAN mask regions (1 = keep map value)."
+        }
+      ]
     }
   ]
 }

@@ -981,22 +981,37 @@ class Hunyuan3DmvGenerator(BaseGenerator):
             except OSError:
                 pass
 
+        # Render orthographic views from the textured mesh (same preview the
+        # Generate node produces for the 3D scene display).
+        self._report(progress_cb, 95, "Rendering views from mesh…")
+        try:
+            views_dir, _depths_dir = _render_mesh_views(output_path, run)
+            print(f"[{self.MODEL_ID}] Rendered views to {views_dir}", file=sys.stderr, flush=True)
+        except Exception as e:
+            # Non-fatal: mesh was textured successfully, views are extra
+            print(f"[{self.MODEL_ID}] View rendering failed (non-fatal): {e}", file=sys.stderr, flush=True)
+
         self._report(progress_cb, 100, "Done")
         self.unload()
         return output_path
 
     def apply_texture_simple(self, image_bytes, params, progress_cb=None, cancel_event=None):
-        """texture_apply node: map a texture atlas image onto an already UV'd mesh.
+        """texture_apply node: map texture atlas image(s) onto an already UV'd mesh.
 
-        No GPU, no diffusion, no bake — just trimesh + PIL. The mesh comes from
-        the upstream node (GLB bytes or mesh_path), the texture image from
-        image_path or wired image bytes. Output: textured GLB in the run folder.
+        No GPU, no diffusion, no bake — just trimesh + PIL (+ pygltflib for PBR).
+        The mesh comes from the upstream node (GLB bytes or mesh_path), the
+        albedo from image_path / wired image bytes / texture_folder. Optional
+        normal, roughness/specular and displacement maps (explicit paths or
+        texture_folder scan) are packed into standard glTF PBR slots.
+        Output: PBR GLB in the run folder.
         """
         self._report(progress_cb, 5, "Preparing texture apply…")
         self._check_cancelled(cancel_event)
 
         run = _modly_current_run_folder(self.outputs_dir, params)
-        output_path = run / "textured_mesh.glb"
+        # Distinct from the Texture Mesh node's textured_mesh.glb so chaining
+        # the nodes can't overwrite the texture node's output.
+        output_path = run / "pbr_mesh.glb"
 
         _is_glb = image_bytes is not None and len(image_bytes) >= 4 and image_bytes[:4] == b"glTF"
         _is_img = image_bytes is not None and not _is_glb
@@ -1029,23 +1044,51 @@ class Hunyuan3DmvGenerator(BaseGenerator):
         if not os.path.exists(mesh_path):
             raise RuntimeError(f"texture_apply: input mesh not found at {mesh_path}")
 
-        # Resolve texture image
+        # Resolve texture image (albedo). A texture_folder with a detectable
+        # albedo file is an alternative to wiring an image. Albedo Source
+        # = folder ignores the wired image entirely and uses the folder's
+        # texturemap (the image input can't be unwired on this node).
         _cleanup_img = False
-        texture_path = params.get("image_path", "")
-        if not texture_path and _is_img:
+        _albedo_source = str(params.get("albedo_source", "image") or "image").lower()
+        _use_wired = (_albedo_source != "folder")
+        texture_path = params.get("image_path", "") if _use_wired else ""
+        texture_folder = params.get("texture_folder", "") or ""
+        if not texture_path and _is_img and _use_wired:
             _fd, texture_path = tempfile.mkstemp(suffix=".png", prefix="hunyuan_tex_in_")
             os.close(_fd)
             with open(texture_path, "wb") as _f:
                 _f.write(image_bytes)
             _cleanup_img = True
-        if not texture_path:
-            raise RuntimeError("texture_apply: no texture image provided (wire an image or set image_path)")
+        if not texture_path and not texture_folder:
+            raise RuntimeError("texture_apply: no texture image provided (wire an image, set image_path, or set texture_folder)")
+
+        def _num(key, default=0.0):
+            try:
+                return float(params.get(key, default) or 0)
+            except (TypeError, ValueError):
+                return float(default)
+
+        def _onoff(key, default="off"):
+            return str(params.get(key, default) or default).lower() == "on"
 
         args = {
             "mesh_path": mesh_path,
             "texture_path": texture_path,
+            "mode": str(params.get("mode", "pbr") or "pbr").lower(),
+            "texture_folder": texture_folder,
+            "rough_mode": str(params.get("rough_mode", "auto") or "auto").lower(),
+            "displacement_strength": _num("displacement_strength", 0.0),
+            "displacement_subdiv": int(_num("displacement_subdiv", 0)),
+            "occlusion_from_height": "on" if _onoff("occlusion_from_height", "on") else "off",
+            "normal_scale": _num("normal_scale", 1.0) or 1.0,
+            "normal_flip_y": "on" if _onoff("normal_flip_y", "off") else "off",
+            "metallic_factor": _num("metallic_factor", 0.0),
             "output_path": str(output_path),
         }
+        # Per-mask-color PBR overrides (maskmap.png regions; white = default).
+        for _c in ("red", "green", "blue", "yellow", "magenta", "cyan"):
+            args[f"mask_{_c}_metallic"] = _num(f"mask_{_c}_metallic", 0.0)
+            args[f"mask_{_c}_rough"] = _num(f"mask_{_c}_rough", 1.0)
         bridge = str(EXT_DIR / "hunyuan3d_texture_apply_bridge.py")
         if not os.path.exists(bridge):
             raise RuntimeError(f"Bridge not found: {bridge}")
@@ -1055,26 +1098,34 @@ class Hunyuan3DmvGenerator(BaseGenerator):
 
         captured = []
 
+        def _host_log(text: str) -> None:
+            text = (text or "").strip()
+            if text:
+                print(f"[{self.MODEL_ID}] {text}", file=sys.stderr, flush=True)
+
         def _pump(stream):
-            for line in stream:
-                line = line.strip()
-                if not line:
-                    continue
-                captured.append(line)
-                try:
-                    msg = json.loads(line)
-                except Exception:
-                    continue
-                t = msg.get("type")
-                if t == "progress":
-                    if progress_cb:
-                        _step = msg.get("step", "")
-                        _sub = msg.get("subtext", "")
-                        if _sub:
-                            _step = f"{_step} — {_sub}" if _step else _sub
-                        progress_cb(msg.get("pct", 0), _step)
-                elif t == "log":
-                    _host_log(msg.get("message", ""))
+            try:
+                for line in stream:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    captured.append(line)
+                    try:
+                        msg = json.loads(line)
+                    except Exception:
+                        continue
+                    t = msg.get("type")
+                    if t == "progress":
+                        if progress_cb:
+                            _step = msg.get("step", "")
+                            _sub = msg.get("subtext", "")
+                            if _sub:
+                                _step = f"{_step} — {_sub}" if _step else _sub
+                            progress_cb(msg.get("pct", 0), _step)
+                    elif t == "log":
+                        _host_log(msg.get("message", ""))
+            except Exception as e:
+                captured.append(f"[pump-error] {e!r}")
 
         proc = subprocess.Popen(
             [str(self.python_path), str(bridge), json.dumps(args)],
@@ -1111,6 +1162,16 @@ class Hunyuan3DmvGenerator(BaseGenerator):
                 os.remove(texture_path)
             except OSError:
                 pass
+
+        # Render orthographic views from the PBR mesh (same preview the
+        # Generate node produces for the 3D scene display).
+        self._report(progress_cb, 95, "Rendering views from mesh…")
+        try:
+            views_dir, _depths_dir = _render_mesh_views(output_path, run)
+            print(f"[{self.MODEL_ID}] Rendered views to {views_dir}", file=sys.stderr, flush=True)
+        except Exception as e:
+            # Non-fatal: mesh was textured successfully, views are extra
+            print(f"[{self.MODEL_ID}] View rendering failed (non-fatal): {e}", file=sys.stderr, flush=True)
 
         self._report(progress_cb, 100, "Done")
         return output_path

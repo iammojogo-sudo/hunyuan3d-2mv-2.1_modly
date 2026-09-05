@@ -1008,6 +1008,34 @@ def texture_mesh(args):
             flush=True)
     pipeline.render.load_mesh(mesh)
 
+    # ── Mask-map paint guide ─────────────────────────────────────────────
+    # White canvas with UV triangle borders: bucket-fill regions with solid
+    # palette colors (red/green/blue/yellow/magenta/cyan, white = default),
+    # drop it in the Apply Texture folder as maskmap.png, and each color gets
+    # its own metallic/roughness. Non-fatal; never blocks the texture run.
+    try:
+        from PIL import ImageDraw as _ID
+        _ms = 1024
+        _mm = Image.new("RGB", (_ms, _ms), (255, 255, 255))
+        _dr = _ID.Draw(_mm)
+        _muv = np.asarray(mesh.visual.uv, dtype=float)
+        _mfc = np.asarray(mesh.faces)
+        _mpx = _muv[:, 0] * (_ms - 1)
+        _mpy = (1.0 - _muv[:, 1]) * (_ms - 1)
+        for _tri in _mfc:
+            _dr.line([(_mpx[_tri[0]], _mpy[_tri[0]]),
+                      (_mpx[_tri[1]], _mpy[_tri[1]]),
+                      (_mpx[_tri[2]], _mpy[_tri[2]]),
+                      (_mpx[_tri[0]], _mpy[_tri[0]])], fill=(160, 160, 160))
+        _maskmap_path = os.path.join(os.path.dirname(output_path) or ".", "maskmap.png")
+        _mm.save(_maskmap_path)
+        print(json.dumps({"type": "log", "message":
+            "[texture] maskmap.png guide saved next to the output — paint regions "
+            "red/green/blue/yellow/magenta/cyan (white = default) and add it to the "
+            "Apply Texture folder for per-region PBR"}), flush=True)
+    except Exception as _mm_e:
+        print(json.dumps({"type": "log", "message": f"[texture] maskmap guide skipped: {_mm_e}"}), flush=True)
+
     # ── Stage 3: Render normal/position maps from 6 cameras ──────────────
     elevs = pipeline.config.candidate_camera_elevs
     azims = pipeline.config.candidate_camera_azims
@@ -1201,6 +1229,7 @@ def texture_mesh(args):
     _final = (texture.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
     if _final.ndim == 3 and _final.shape[2] in (3, 4):
         Image.fromarray(_final).save(os.path.join(_debug_dir, "06_inpainted_texture.png"))
+
     pipeline.render.set_texture(texture)
     textured_mesh = pipeline.render.save_mesh()
 
